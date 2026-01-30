@@ -10,6 +10,8 @@ from loguru import logger
 from ai_client import AIClient
 from config import TELEGRAM_BOT_TOKEN, BOT_NAME
 from personas import get_persona_list, is_valid_persona, get_persona
+from group_monitor import GroupMonitor
+from summarizer import MessageSummarizer
 
 
 class TelegramBot:
@@ -18,6 +20,10 @@ class TelegramBot:
     def __init__(self):
         self.ai = AIClient()
         self.app = None
+        # 群消息监听器
+        self.group_monitor = GroupMonitor()
+        # 消息总结器
+        self.summarizer = MessageSummarizer(self.ai)
         logger.info("✓ 机器人初始化完成")
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -68,16 +74,20 @@ class TelegramBot:
             f"  /help - 显示此帮助\n"
             f"  /persona - 查看和切换人设\n"
             f"  /persona 小高 - 切换到小高同学\n"
-            f"  /persona 丰子 - 切换到丰子\n"
             f"  /stats - 查看使用统计\n"
             f"  /memory - 查看记住的信息\n"
             f"  /memory 名字 小明 - 记住信息\n"
             f"  /forget 名字 - 忘记信息\n"
             f"  /search Python教程 - 联网搜索\n"
+            f"  /summary - 总结群聊（仅群聊）\n"
+            f"  /summary 1h - 总结最近1小时\n"
+            f"  /summary 快速 - 快速统计（不用AI）\n"
             f"  /clear - 清空对话历史\n\n"
             f"✨ 特点：\n"
             f"  • 多种人设可选，风格各异\n"
             f"  • 记住上下文，支持连续对话\n"
+            f"  • 图片识别，语音转文字\n"
+            f"  • 群消息总结，提取重点\n"
             f"  • 快速响应，实时回复\n"
         )
         await update.message.reply_text(help_msg)
@@ -219,6 +229,73 @@ class TelegramBot:
             logger.error(f"搜索失败: {e}")
             await update.message.reply_text("抱歉，搜索失败了，请稍后再试~")
     
+    async def summary_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """处理 /summary 命令"""
+        chat_id = update.message.chat.id
+        chat_type = update.message.chat.type
+        chat_title = update.message.chat.title or "私聊"
+        
+        # 只在群聊中可用
+        if chat_type not in ["group", "supergroup"]:
+            await update.message.reply_text("📊 总结功能只能在群聊中使用哦")
+            return
+        
+        # 解析时间范围参数
+        hours = 24  # 默认24小时
+        use_ai = True  # 默认使用AI
+        
+        if context.args:
+            for arg in context.args:
+                # 时间范围参数
+                if arg in ["1h", "1小时"]:
+                    hours = 1
+                elif arg in ["3h", "3小时"]:
+                    hours = 3
+                elif arg in ["6h", "6小时"]:
+                    hours = 6
+                elif arg in ["12h", "12小时"]:
+                    hours = 12
+                elif arg in ["today", "今天"]:
+                    hours = 24
+                elif arg in ["2d", "2天"]:
+                    hours = 48
+                elif arg in ["week", "本周"]:
+                    hours = 168
+                # 快速模式（不使用AI）
+                elif arg in ["quick", "快速"]:
+                    use_ai = False
+                # 数字参数
+                elif arg.isdigit():
+                    hours = int(arg)
+        
+        logger.info(f"生成群 {chat_id} 的总结，时间范围: {hours}小时, AI: {use_ai}")
+        
+        # 发送"正在输入"状态
+        await update.message.chat.send_action("typing")
+        
+        try:
+            # 获取消息
+            messages = self.group_monitor.get_messages(chat_id, hours)
+            
+            if not messages:
+                time_desc = f"{hours}小时" if hours < 24 else f"{hours//24}天"
+                await update.message.reply_text(f"📊 最近{time_desc}没有消息记录哦")
+                return
+            
+            # 生成总结
+            if use_ai:
+                summary = self.summarizer.generate_summary(chat_id, messages, chat_title)
+            else:
+                summary = self.summarizer.generate_quick_summary(messages)
+            
+            # 发送总结
+            await update.message.reply_text(summary)
+            logger.success(f"已生成群 {chat_id} 的总结")
+            
+        except Exception as e:
+            logger.error(f"生成总结失败: {e}")
+            await update.message.reply_text("❌ 总结生成失败了，请稍后再试")
+    
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """处理按钮回调"""
         query = update.callback_query
@@ -269,42 +346,7 @@ class TelegramBot:
                 f"  /memory 名字 小明 - 记住信息\n"
                 f"  /forget 名字 - 忘记信息\n"
                 f"  /search Python教程 - 联网搜索\n"
-                f"  /clear - 清空对话历史\n\n"
-                f"✨ 特点：\n"
-                f"  • 多种人设可选，风格各异\n"
-                f"  • 记住上下文，支持连续对话\n"
-                f"  • 快速响应，实时回复\n"
-            )
-            await query.message.edit_text(help_msg)
-        
-        elif data == "clear":
-            self.ai.clear_history(user_id)
-            await query.message.edit_text("✅ 对话历史已清空")
-            logger.info(f"用户 {user_id} 清空了对话历史")
-        
-        elif data == "stats":
-            stats_text = self.ai.stats.format_stats(user_id)
-            await query.message.edit_text(stats_text)
-        
-        elif data == "memory":
-            memory_text = self.ai.memory.format_memories(user_id)
-            await query.message.edit_text(memory_text)
-        
-        elif data == "help":
-            help_msg = (
-                f"🤖 {BOT_NAME} 使用帮助\n\n"
-                f"💬 聊天方式：\n"
-                f"  直接发送消息即可开始对话\n"
-                f"  我会记住我们的对话历史\n\n"
-                f"📝 可用命令：\n"
-                f"  /start - 显示欢迎信息\n"
-                f"  /help - 显示此帮助\n"
-                f"  /persona - 查看和切换人设\n"
-                f"  /stats - 查看使用统计\n"
-                f"  /memory - 查看记住的信息\n"
-                f"  /memory 名字 小明 - 记住信息\n"
-                f"  /forget 名字 - 忘记信息\n"
-                f"  /search Python教程 - 联网搜索\n"
+                f"  /summary - 总结群聊（仅群聊）\n"
                 f"  /clear - 清空对话历史\n\n"
                 f"✨ 特点：\n"
                 f"  • 多种人设可选，风格各异\n"
@@ -324,6 +366,17 @@ class TelegramBot:
         user_id = str(user.id)
         message_text = update.message.text
         chat_type = update.message.chat.type
+        chat_id = update.message.chat.id
+        
+        # 群聊消息记录（用于总结）
+        if chat_type in ["group", "supergroup"]:
+            username = user.username or user.first_name or f"User{user.id}"
+            self.group_monitor.record_message(
+                chat_id=chat_id,
+                user_id=user.id,
+                username=username,
+                message=message_text
+            )
         
         # 群聊判断：只在被 @ 或回复时响应
         if chat_type in ["group", "supergroup"]:
@@ -552,6 +605,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("memory", self.memory_command))
         self.app.add_handler(CommandHandler("forget", self.forget_command))
         self.app.add_handler(CommandHandler("search", self.search_command))
+        self.app.add_handler(CommandHandler("summary", self.summary_command))
         self.app.add_handler(CommandHandler("clear", self.clear_command))
         
         # 注册按钮回调处理器
@@ -575,6 +629,7 @@ class TelegramBot:
                 BotCommand("memory", "查看记住的信息"),
                 BotCommand("forget", "忘记某个信息"),
                 BotCommand("search", "联网搜索"),
+                BotCommand("summary", "总结群聊消息"),
                 BotCommand("clear", "清空对话历史")
             ]
             await app.bot.set_my_commands(commands)
@@ -593,6 +648,25 @@ class TelegramBot:
         job_queue = self.app.job_queue
         if job_queue:
             job_queue.run_repeating(heartbeat, interval=3600, first=3600)  # 3600秒 = 1小时
+            
+            # 定时清理过期消息（每天凌晨3点）
+            async def cleanup_messages(context):
+                logger.info("🧹 开始清理过期群消息...")
+                try:
+                    self.group_monitor.cleanup_old_messages()
+                    logger.info("✓ 过期消息清理完成")
+                except Exception as e:
+                    logger.error(f"清理过期消息失败: {e}")
+            
+            # 计算到凌晨3点的秒数
+            from datetime import datetime, time as dt_time
+            now = datetime.now()
+            target_time = datetime.combine(now.date(), dt_time(3, 0))
+            if target_time < now:
+                target_time = target_time.replace(day=target_time.day + 1)
+            first_run = (target_time - now).total_seconds()
+            
+            job_queue.run_repeating(cleanup_messages, interval=86400, first=first_run)  # 86400秒 = 24小时
         
         logger.info("")
         logger.info("✨ 功能特性:")
@@ -600,6 +674,7 @@ class TelegramBot:
         logger.info("  ✅ 图片识别，发送图片即可识别")
         logger.info("  ✅ 语音识别，发送语音自动转文字")
         logger.info("  ✅ 联网搜索，获取实时信息")
+        logger.info("  ✅ 群消息总结，提取重点内容")
         logger.info("  ✅ 记忆系统，记住你的重要信息")
         logger.info("  ✅ 使用统计，了解你的聊天习惯")
         logger.info("  ✅ 群聊支持，@ 机器人即可对话")
@@ -632,6 +707,8 @@ class TelegramBot:
     
     def stop(self):
         """停止机器人"""
+        # 保存所有缓存的消息
+        self.group_monitor.save_all()
         logger.info("🛑 机器人已停止")
 
 

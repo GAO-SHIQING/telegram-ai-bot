@@ -9,7 +9,12 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 # ========== AI 聊天配置 ==========
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+
+# 文字对话模型（快速）
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
+
+# 视觉模型（图片识别）
+VISION_MODEL_NAME = os.getenv("VISION_MODEL_NAME", os.getenv("MODEL_NAME", "gpt-4o-mini"))
 
 # ========== 机器人配置 ==========
 BOT_NAME = os.getenv("BOT_NAME", "AI 助手")

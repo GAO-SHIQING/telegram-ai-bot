@@ -4,6 +4,7 @@ from pathlib import Path
 from openai import OpenAI
 from loguru import logger
 from config import OPENAI_API_KEY, OPENAI_BASE_URL, MODEL_NAME, MAX_API_RETRY, HISTORY_DIR
+from config import VISION_MODEL_NAME
 from personas import get_persona, DEFAULT_PERSONA
 from stats import StatsManager
 from memory import MemoryManager
@@ -18,6 +19,7 @@ class AIClient:
         self.api_key = api_key or OPENAI_API_KEY
         self.base_url = base_url or OPENAI_BASE_URL
         self.model_name = model_name or MODEL_NAME
+        self.vision_model_name = VISION_MODEL_NAME  # 视觉模型
         self.max_retry = max_retry or MAX_API_RETRY
         
         self.client = OpenAI(
@@ -222,13 +224,13 @@ class AIClient:
         last_error = None
         for attempt in range(self.max_retry):
             try:
-                # 调用 AI（需要支持视觉的模型）
+                # 使用视觉模型（图片识别专用）
                 response = self.client.chat.completions.create(
-                    model=self.model_name,
+                    model=self.vision_model_name,  # 使用视觉模型
                     messages=messages,
                     max_tokens=1000,
                     temperature=0.7,
-                    timeout=30
+                    timeout=90  # 视觉模型可能需要更长时间
                 )
                 
                 reply = response.choices[0].message.content.strip()
@@ -248,14 +250,35 @@ class AIClient:
                 
             except Exception as e:
                 last_error = e
+                error_msg = str(e)
+                
+                # 检查是否是模型不存在的错误
+                if "does not exist" in error_msg or "Model not found" in error_msg:
+                    logger.error(f"视觉模型不存在: {self.vision_model_name}")
+                    return "暂时看不了图片|||等会再试试吧"
+                
+                # 超时错误不重试太多次
+                if "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
+                    logger.warning(f"图片识别超时 ({attempt + 1}/{self.max_retry})")
+                    if attempt < 1:
+                        time.sleep(2)
+                        continue
+                    else:
+                        break
+                
+                # 其他错误正常重试
                 if attempt < self.max_retry - 1:
                     wait_time = 2 ** attempt
-                    logger.warning(f"AI 图片识别失败，重试 ({attempt + 1}/{self.max_retry})，等待 {wait_time}s: {e}")
+                    logger.warning(f"AI 图片识别失败，重试 ({attempt + 1}/{self.max_retry})，等待 {wait_time}s")
                     time.sleep(wait_time)
                 else:
-                    logger.error(f"AI 图片识别失败，已达最大重试次数: {e}")
+                    logger.error(f"AI 图片识别失败，已达最大重试次数")
         
-        return f"抱歉，图片识别失败了（{last_error}），请稍后再试~"
+        # 返回友好的错误提示（不包含技术细节）
+        if "timeout" in str(last_error).lower() or "timed out" in str(last_error).lower():
+            return "图片识别超时了|||稍后再试试吧"
+        else:
+            return "图片识别失败了|||请稍后再试"
     
     def chat(self, user_id: str, message: str) -> str:
         """与 AI 对话（带重试机制）"""

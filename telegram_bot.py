@@ -345,8 +345,17 @@ class TelegramBot:
         await update.message.chat.send_action("typing")
         
         try:
-            # 调用 AI 生成回复
-            reply = self.ai.chat(user_id, message_text)
+            # 在异步环境中运行同步的 AI 调用
+            import asyncio
+            loop = asyncio.get_event_loop()
+            
+            # 使用 run_in_executor 避免阻塞
+            reply = await loop.run_in_executor(
+                None,  # 使用默认线程池
+                self.ai.chat,
+                user_id,
+                message_text
+            )
             
             # 处理分条发送（用 ||| 分隔）
             if "|||" in reply:
@@ -359,9 +368,18 @@ class TelegramBot:
             
             logger.success(f"已回复 [{user.first_name}]: {reply[:50]}...")
             
+        except asyncio.TimeoutError:
+            logger.error(f"AI 响应超时 [{user.first_name}]")
+            await update.message.reply_text("网络有点慢|||稍后再试试吧")
         except Exception as e:
-            logger.error(f"处理消息失败: {e}")
-            await update.message.reply_text("抱歉，我遇到了一些问题，请稍后再试~")
+            error_type = type(e).__name__
+            logger.error(f"处理消息失败 [{user.first_name}]: {error_type} - {e}")
+            
+            # 根据错误类型给出不同提示
+            if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+                await update.message.reply_text("网络有点慢|||稍后再试试吧")
+            else:
+                await update.message.reply_text("出了点问题|||等会再试试吧")
     
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """处理图片消息"""

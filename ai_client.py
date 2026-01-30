@@ -291,13 +291,13 @@ class AIClient:
         last_error = None
         for attempt in range(self.max_retry):
             try:
-                # 调用 AI
+                # 调用 AI（设置合理的超时）
                 response = self.client.chat.completions.create(
                     model=self.model_name,
                     messages=messages,
                     max_tokens=1000,
                     temperature=0.7,
-                    timeout=30
+                    timeout=60  # 增加到60秒，避免频繁超时
                 )
                 
                 reply = response.choices[0].message.content.strip()
@@ -317,14 +317,30 @@ class AIClient:
                 
             except Exception as e:
                 last_error = e
+                error_type = type(e).__name__
+                
+                # 超时错误不重试太多次
+                if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+                    logger.warning(f"AI 调用超时 ({attempt + 1}/{self.max_retry}): {e}")
+                    if attempt < 1:  # 超时只重试1次
+                        time.sleep(2)
+                        continue
+                    else:
+                        break
+                
+                # 其他错误正常重试
                 if attempt < self.max_retry - 1:
                     wait_time = 2 ** attempt  # 指数退避：1s, 2s, 4s
-                    logger.warning(f"AI 调用失败，重试 ({attempt + 1}/{self.max_retry})，等待 {wait_time}s: {e}")
+                    logger.warning(f"AI 调用失败，重试 ({attempt + 1}/{self.max_retry})，等待 {wait_time}s: {error_type}")
                     time.sleep(wait_time)
                 else:
-                    logger.error(f"AI 调用失败，已达最大重试次数: {e}")
+                    logger.error(f"AI 调用失败，已达最大重试次数: {error_type} - {e}")
         
-        return f"抱歉，我暂时无法回复（{last_error}），请稍后再试~"
+        # 根据错误类型返回不同的提示
+        if "timeout" in str(last_error).lower() or "timed out" in str(last_error).lower():
+            return "网络有点慢|||稍后再试试吧"
+        else:
+            return "出了点问题|||等会再试试吧"
         
         return f"抱歉，我暂时无法回复（{last_error}），请稍后再试~"
 
